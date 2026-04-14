@@ -1,55 +1,125 @@
-data "aws_vpc" "vpc" {
-  filter {
-    name   = "tag:Name"
-    values = [var.vpc-name]
+
+resource "aws_vpc" "main" {
+  cidr_block = "10.0.0.0/16"
+
+  tags = {
+    Name = "my-vpc"
   }
 }
 
-data "aws_internet_gateway" "igw" {
-  filter {
-    name   = "tag:Name"
-    values = [var.igw-name]
+# -------------------------------
+# Internet Gateway
+# -------------------------------
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "my-igw"
   }
 }
 
-data "aws_subnet" "subnet" {
-  filter {
-    name   = "tag:Name"
-    values = [var.subnet-name]
-  }
+# -------------------------------
+# Availability Zones
+# -------------------------------
+variable "azs" {
+  default = ["us-east-1a", "us-east-1b", "us-east-1c"]
 }
 
-data "aws_security_group" "sg-default" {
-  filter {
-    name   = "tag:Name"
-    values = [var.security-group-name]
-  }
-}
+# -------------------------------
+# Public Subnets (3)
+# -------------------------------
+resource "aws_subnet" "public" {
+  count = 3
 
-resource "aws_subnet" "public-subnet2" {
-  vpc_id                  = data.aws_vpc.vpc.id
-  cidr_block              = "10.0.2.0/24"
-  availability_zone       = "us-east-1b"
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = cidrsubnet("10.0.0.0/16", 8, count.index)
+  availability_zone       = var.azs[count.index]
   map_public_ip_on_launch = true
 
   tags = {
-    Name = var.subnet-name2
+    Name = "public-subnet-${count.index + 1}"
   }
 }
 
-resource "aws_route_table" "rt2" {
-  vpc_id = data.aws_vpc.vpc.id
+# -------------------------------
+# Private Subnets (3)
+# -------------------------------
+resource "aws_subnet" "private" {
+  count = 3
+
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet("10.0.0.0/16", 8, count.index + 10)
+  availability_zone = var.azs[count.index]
+
+  tags = {
+    Name = "private-subnet-${count.index + 1}"
+  }
+}
+
+# -------------------------------
+# Public Route Table
+# -------------------------------
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
   route {
     cidr_block = "0.0.0.0/0"
-    gateway_id = data.aws_internet_gateway.igw.id
+    gateway_id = aws_internet_gateway.igw.id
   }
 
   tags = {
-    Name = var.rt-name2
+    Name = "public-rt"
   }
 }
 
-resource "aws_route_table_association" "rt-association2" {
-  route_table_id = aws_route_table.rt2.id
-  subnet_id      = aws_subnet.public-subnet2.id
+# -------------------------------
+# Associate Public Subnets
+# -------------------------------
+resource "aws_route_table_association" "public_assoc" {
+  count = 3
+
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+# -------------------------------
+# NAT Gateway
+# -------------------------------
+resource "aws_eip" "nat" {
+  domain = "vpc"
+}
+
+resource "aws_nat_gateway" "nat" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public[0].id
+
+  tags = {
+    Name = "nat-gateway"
+  }
+}
+
+# -------------------------------
+# Private Route Table
+# -------------------------------
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.nat.id
+  }
+
+  tags = {
+    Name = "private-rt"
+  }
+}
+
+# -------------------------------
+# Associate Private Subnets
+# -------------------------------
+resource "aws_route_table_association" "private_assoc" {
+  count = 3
+
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
 }
